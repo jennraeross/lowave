@@ -17,25 +17,39 @@ pub struct DeckAction {
     pub volume: Option<f32>,
 }
 
-/// Full-window record player: procedural walnut plinth, centered metal
-/// platter with vinyl + rotating video-art label, auto-drop tonearm.
-/// Hardware (LED, play button, volume fader) docks in the bottom corners so
-/// it never overlaps the record; the album stays centered horizontally and
-/// vertically.
+/// Hardware (LED, play button, volume fader) docks in the bottom corners.
+/// The record is centered, then shrunk just enough that it never touches the
+/// hardware, at any window size.
 pub fn draw(ui: &mut egui::Ui, rect: egui::Rect, p: &DeckParams) -> DeckAction {
     let mut action = DeckAction::default();
     let painter = ui.painter_at(rect);
 
     draw_wood(&painter, rect);
 
+    // Hardware geometry first so the record can clear it.
+    let base_y = rect.max.y - 40.0;
+    let play_center = egui::pos2(rect.min.x + 96.0, base_y);
+    let play_rect = egui::Rect::from_center_size(play_center, egui::vec2(96.0, 50.0));
+    let fader_rect = egui::Rect::from_min_max(
+        egui::pos2(
+            (rect.max.x - 206.0).max(play_rect.max.x + 12.0),
+            base_y - 26.0,
+        ),
+        egui::pos2(rect.max.x - 16.0, base_y + 26.0),
+    );
+    let led_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.min.x + 26.0, base_y),
+        egui::vec2(12.0, 12.0),
+    );
+    let keep_out = [play_rect, fader_rect, led_rect];
+
     if p.spin {
-        draw_platter(ui, &painter, rect, p);
+        draw_platter(ui, &painter, rect, p, &keep_out);
     } else {
-        draw_cover(ui, &painter, rect, p.art);
+        draw_cover(ui, &painter, rect, p.art, &keep_out);
     }
 
-    // Hardware docks in the bottom corners, clear of the centered record.
-    let base_y = rect.max.y - 40.0;
+    // LED.
     let led = egui::pos2(rect.min.x + 26.0, base_y);
     painter.circle_filled(led, 5.0, egui::Color32::from_rgb(60, 55, 50));
     let led_col = if p.power {
@@ -45,23 +59,22 @@ pub fn draw(ui: &mut egui::Ui, rect: egui::Rect, p: &DeckParams) -> DeckAction {
     };
     painter.circle_filled(led, 3.0, led_col);
 
-    let play_center = egui::pos2(rect.min.x + 96.0, base_y);
     if chunky_button(ui, &painter, play_center, egui::vec2(96.0, 50.0), p.power) {
         action.toggle_play = true;
     }
 
-    let fader_rect = egui::Rect::from_min_max(
-        egui::pos2(
-            (rect.max.x - 206.0).max(play_center.x + 60.0),
-            base_y - 26.0,
-        ),
-        egui::pos2(rect.max.x - 16.0, base_y + 26.0),
-    );
     if let Some(v) = chunky_fader(ui, &painter, fader_rect, p.volume) {
         action.volume = Some(v);
     }
 
     action
+}
+
+/// True when a circle touches a rect.
+fn circle_hits_rect(c: egui::Pos2, r: f32, rect: egui::Rect) -> bool {
+    let dx = (c.x - rect.min.x.max(c.x).min(rect.max.x)).abs();
+    let dy = (c.y - rect.min.y.max(c.y).min(rect.max.y)).abs();
+    dx * dx + dy * dy < r * r
 }
 
 /// Big metal push-button. Returns true when clicked.
@@ -216,10 +229,19 @@ fn draw_platter(
     painter: &egui::Painter,
     rect: egui::Rect,
     p: &DeckParams,
+    keep_out: &[egui::Rect],
 ) {
-    // Platter centered in the window, horizontally and vertically.
+    // Platter centered in the window, shrunk only as much as needed to clear
+    // the corner hardware (platter ring included in the clearance).
     let c = rect.center();
-    let r = (rect.width().min(rect.height()) / 2.0 - 12.0).max(40.0);
+    let mut r = (rect.width().min(rect.height()) / 2.0 - 12.0).max(40.0);
+    while r > 40.0
+        && keep_out
+            .iter()
+            .any(|k| circle_hits_rect(c, r + 12.0, *k))
+    {
+        r *= 0.97;
+    }
 
     // Metal platter + rubber mat.
     painter.circle_filled(c, r + 10.0, egui::Color32::from_rgb(150, 148, 145));
@@ -397,15 +419,24 @@ fn draw_wood(painter: &egui::Painter, rect: egui::Rect) {
     );
 }
 
-/// Upright square album cover used when spin is off.
+/// Upright square album cover used when spin is off. Centered, shrunk only
+/// as much as needed to clear the corner hardware.
 fn draw_cover(
     ui: &mut egui::Ui,
     painter: &egui::Painter,
     rect: egui::Rect,
     art: Option<&Art>,
+    keep_out: &[egui::Rect],
 ) {
     let c = rect.center();
-    let side = (rect.width().min(rect.height()) - 48.0).max(80.0);
+    let mut side = (rect.width().min(rect.height()) - 48.0).max(80.0);
+    while side > 80.0
+        && keep_out.iter().any(|k| {
+            k.intersects(egui::Rect::from_center_size(c, egui::vec2(side, side)))
+        })
+    {
+        side *= 0.97;
+    }
     let crect = egui::Rect::from_center_size(c, egui::vec2(side, side));
     painter.rect_filled(
         crect.translate(egui::vec2(0.0, 6.0)),
