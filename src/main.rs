@@ -1,5 +1,6 @@
 mod art;
 mod config;
+mod deck;
 mod playback;
 mod ytdlp;
 
@@ -31,6 +32,8 @@ struct LowaveApp {
     player: PlaybackController,
     art: ArtCache,
     disc_angle: f32,
+    arm: f32,
+    needle: f32,
     new_name: String,
     new_url: String,
     loading: bool,
@@ -56,6 +59,8 @@ impl LowaveApp {
             player: PlaybackController::new(volume),
             art: ArtCache::new(),
             disc_angle: 0.0,
+            arm: 0.0,
+            needle: 0.0,
             new_name: String::new(),
             new_url: String::new(),
             loading: true,
@@ -111,6 +116,7 @@ impl LowaveApp {
             self.selected = Some(i);
             self.cfg.last_url = Some(e.url.clone());
             let _ = config::save(&self.cfg);
+            self.needle = 0.0;
             self.player.play(e.url.clone());
         }
     }
@@ -151,6 +157,13 @@ impl eframe::App for LowaveApp {
                 self.disc_angle += dt * 0.05;
             }
         }
+        // Tonearm follows playback: drops when playing, lifts back on stop.
+        let arm_target = if playing { 1.0 } else { 0.0 };
+        let step = dt * 1.2;
+        self.arm += (arm_target - self.arm).clamp(-step, step);
+        if playing {
+            self.needle = (self.needle + dt * 0.002).min(1.0);
+        }
 
         // Track pointer movement for auto-hide.
         if ctx.pointer_hover_pos() != self.last_pointer {
@@ -175,92 +188,20 @@ impl eframe::App for LowaveApp {
             None => (String::new(), None),
         };
         let art = self.art.get(ctx, &sel_id, sel_thumb.as_deref());
-        let spin = self.cfg.spin;
+        let params = deck::DeckParams {
+            art: art.as_ref(),
+            disc_angle: self.disc_angle,
+            spin: self.cfg.spin,
+            arm: self.arm,
+            needle: self.needle,
+            power: playing,
+        };
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(16, 14, 12)))
             .show(ctx, |ui| {
                 let avail = ui.available_size();
                 let (rect, _) = ui.allocate_exact_size(avail, egui::Sense::hover());
-                let painter = ui.painter_at(rect);
-                painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(20, 16, 13));
-                let c = rect.center();
-                let r = (rect.width().min(rect.height()) / 2.0 - 16.0).max(40.0);
-                if !spin {
-                    // Upright square album cover.
-                    let side = (rect.width().min(rect.height()) - 48.0).max(80.0);
-                    let crect = egui::Rect::from_center_size(c, egui::vec2(side, side));
-                    painter.rect_filled(
-                        crect.translate(egui::vec2(0.0, 6.0)),
-                        10.0,
-                        egui::Color32::from_black_alpha(120),
-                    );
-                    if let Some(a) = &art {
-                        let sized =
-                            egui::load::SizedTexture::new(a.square.id(), crect.size());
-                        egui::Image::new(sized)
-                            .corner_radius(10.0)
-                            .paint_at(ui, crect);
-                    } else {
-                        painter.rect_filled(
-                            crect,
-                            10.0,
-                            egui::Color32::from_rgb(32, 26, 22),
-                        );
-                        painter.text(
-                            c,
-                            egui::Align2::CENTER_CENTER,
-                            "LOWAVE",
-                            egui::FontId::proportional(20.0),
-                            egui::Color32::from_rgb(150, 130, 110),
-                        );
-                    }
-                    return;
-                }
-                // Vinyl base.
-                painter.circle_filled(c, r, egui::Color32::from_rgb(10, 10, 12));
-                painter.circle_stroke(
-                    c,
-                    r,
-                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(60, 55, 50)),
-                );
-                // Rotating video-art label.
-                let label_r = r * 0.62;
-                if let Some(a) = &art {
-                    let side = label_r * 2.0;
-                    let irect = egui::Rect::from_center_size(c, egui::vec2(side, side));
-                    let sized = egui::load::SizedTexture::new(a.disc.id(), irect.size());
-                    egui::Image::new(sized)
-                        .rotate(self.disc_angle, egui::Vec2::splat(0.5))
-                        .paint_at(ui, irect);
-                } else {
-                    painter.circle_filled(
-                        c,
-                        label_r,
-                        egui::Color32::from_rgb(32, 26, 22),
-                    );
-                    painter.text(
-                        c,
-                        egui::Align2::CENTER_CENTER,
-                        "LOWAVE",
-                        egui::FontId::proportional(18.0),
-                        egui::Color32::from_rgb(150, 130, 110),
-                    );
-                }
-                // Grooves on the exposed vinyl ring (symmetric, cheap sheen).
-                for i in 1..=6 {
-                    let gr = label_r + (r - label_r) * (i as f32 / 7.0);
-                    painter.circle_stroke(
-                        c,
-                        gr,
-                        egui::Stroke::new(
-                            1.0_f32,
-                            egui::Color32::from_rgba_unmultiplied(120, 110, 100, 28),
-                        ),
-                    );
-                }
-                // Spindle (static, on top).
-                painter.circle_filled(c, 5.0, egui::Color32::from_rgb(180, 170, 160));
-                painter.circle_filled(c, 2.0, egui::Color32::from_rgb(16, 14, 12));
+                deck::draw(ui, rect, &params);
             });
 
         // Hamburger, visible only when the sidebar is closed
