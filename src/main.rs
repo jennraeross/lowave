@@ -1,13 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod art;
+mod cassette;
 mod config;
 mod deck;
 mod playback;
 mod ytdlp;
 
 use art::ArtCache;
-use config::{AppConfig, UserStream};
+use config::{AppConfig, UserStream, ViewMode};
 use eframe::egui;
 use playback::{PlaybackController, PlaybackStatus};
 use ytdlp::LiveEntry;
@@ -36,6 +37,7 @@ struct LowaveApp {
     disc_angle: f32,
     arm: f32,
     needle: f32,
+    play_time: f32,
     new_name: String,
     new_url: String,
     loading: bool,
@@ -61,6 +63,7 @@ impl LowaveApp {
             disc_angle: 0.0,
             arm: 0.0,
             needle: 0.0,
+            play_time: 0.0,
             new_name: String::new(),
             new_url: String::new(),
             loading: true,
@@ -115,6 +118,7 @@ impl LowaveApp {
             self.cfg.last_url = Some(e.url.clone());
             let _ = config::save(&self.cfg);
             self.needle = 0.0;
+            self.play_time = 0.0;
             self.player.play(e.url.clone());
         }
     }
@@ -161,6 +165,7 @@ impl eframe::App for LowaveApp {
         self.arm += (arm_target - self.arm).clamp(-step, step);
         if playing {
             self.needle = (self.needle + dt * 0.002).min(1.0);
+            self.play_time += dt;
         }
 
         // Dark analog theme, no panel chrome.
@@ -178,6 +183,7 @@ impl eframe::App for LowaveApp {
             None => (String::new(), None),
         };
         let art = self.art.get(ctx, &sel_id, sel_thumb.as_deref());
+        let view = self.cfg.view;
         let params = deck::DeckParams {
             art: art.as_ref(),
             disc_angle: self.disc_angle,
@@ -187,12 +193,22 @@ impl eframe::App for LowaveApp {
             power: playing,
             volume: self.cfg.volume,
         };
+        let c_params = cassette::CassetteParams {
+            art: art.as_ref(),
+            play_time: self.play_time,
+            playing,
+            power: playing,
+            volume: self.cfg.volume,
+        };
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(16, 14, 12)))
             .show(ctx, |ui| {
                 let avail = ui.available_size();
                 let (rect, _) = ui.allocate_exact_size(avail, egui::Sense::hover());
-                let action = deck::draw(ui, rect, &params);
+                let action = match view {
+                    ViewMode::Vinyl => deck::draw(ui, rect, &params),
+                    ViewMode::Cassette => cassette::draw(ui, rect, &c_params),
+                };
                 if action.toggle_play {
                     self.toggle_play();
                 }
@@ -339,7 +355,16 @@ impl eframe::App for LowaveApp {
                                             let _ = config::save(&self.cfg);
                                         }
                                     });
-                                    if ui.checkbox(&mut self.cfg.spin, "spin disc").changed() {
+                                    if self.cfg.view == ViewMode::Vinyl
+                                        && ui.checkbox(&mut self.cfg.spin, "spin disc").changed()
+                                    {
+                                        let _ = config::save(&self.cfg);
+                                    }
+                                    if ui
+                                        .button(format!("view: {}", self.cfg.view.label()))
+                                        .clicked()
+                                    {
+                                        self.cfg.view = self.cfg.view.toggle();
                                         let _ = config::save(&self.cfg);
                                     }
                                     ui.monospace(&self.status_text);

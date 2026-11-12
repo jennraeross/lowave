@@ -71,14 +71,14 @@ pub fn draw(ui: &mut egui::Ui, rect: egui::Rect, p: &DeckParams) -> DeckAction {
 }
 
 /// True when a circle touches a rect.
-fn circle_hits_rect(c: egui::Pos2, r: f32, rect: egui::Rect) -> bool {
+pub(crate) fn circle_hits_rect(c: egui::Pos2, r: f32, rect: egui::Rect) -> bool {
     let dx = (c.x - rect.min.x.max(c.x).min(rect.max.x)).abs();
     let dy = (c.y - rect.min.y.max(c.y).min(rect.max.y)).abs();
     dx * dx + dy * dy < r * r
 }
 
 /// Big metal push-button. Returns true when clicked.
-fn chunky_button(
+pub(crate) fn chunky_button(
     ui: &mut egui::Ui,
     painter: &egui::Painter,
     center: egui::Pos2,
@@ -151,7 +151,7 @@ fn chunky_button(
 
 /// Horizontal fader: groove track + knurled metal knob. Drag or click the
 /// track to set. Returns the new value when changed.
-fn chunky_fader(
+pub(crate) fn chunky_fader(
     ui: &mut egui::Ui,
     painter: &egui::Painter,
     rect: egui::Rect,
@@ -366,7 +366,7 @@ fn draw_tonearm(
 
 /// Walnut plinth: vertical gradient bands + deterministic grain + plank
 /// seams. The hash-based grain is stable frame to frame (no shimmer).
-fn draw_wood(painter: &egui::Painter, rect: egui::Rect) {
+pub(crate) fn draw_wood(painter: &egui::Painter, rect: egui::Rect) {
     let dark = egui::Color32::from_rgb(46, 28, 16);
     let light = egui::Color32::from_rgb(96, 62, 34);
     painter.rect_filled(rect, 0.0, dark);

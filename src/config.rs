@@ -9,6 +9,29 @@ pub struct UserStream {
     pub url: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ViewMode {
+    #[default]
+    Vinyl,
+    Cassette,
+}
+
+impl ViewMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            ViewMode::Vinyl => "vinyl",
+            ViewMode::Cassette => "cassette",
+        }
+    }
+
+    pub fn toggle(self) -> Self {
+        match self {
+            ViewMode::Vinyl => ViewMode::Cassette,
+            ViewMode::Cassette => ViewMode::Vinyl,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     #[serde(default = "default_streams")]
@@ -21,6 +44,9 @@ pub struct AppConfig {
     /// Whether the disc spins while playing.
     #[serde(default = "default_true")]
     pub spin: bool,
+    /// Centerpiece view.
+    #[serde(default)]
+    pub view: ViewMode,
 }
 
 fn default_true() -> bool {
@@ -51,6 +77,7 @@ impl Default for AppConfig {
             volume: 0.8,
             last_url: None,
             spin: true,
+            view: ViewMode::Vinyl,
         }
     }
 }
