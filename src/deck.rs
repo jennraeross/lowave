@@ -7,22 +7,207 @@ pub struct DeckParams<'a> {
     pub arm: f32,
     pub needle: f32,
     pub power: bool,
+    pub volume: f32,
+}
+
+/// Interactions from the deck's hardware controls.
+#[derive(Default)]
+pub struct DeckAction {
+    pub toggle_play: bool,
+    pub volume: Option<f32>,
 }
 
 /// Full-window record player: procedural walnut plinth, metal platter, vinyl
-/// with rotating video-art label, auto-drop tonearm, power LED.
-pub fn draw(ui: &mut egui::Ui, rect: egui::Rect, p: &DeckParams) {
+/// with rotating video-art label, auto-drop tonearm, chunky transport +
+/// volume hardware along the bottom strip, power LED.
+pub fn draw(ui: &mut egui::Ui, rect: egui::Rect, p: &DeckParams) -> DeckAction {
+    let mut action = DeckAction::default();
     let painter = ui.painter_at(rect);
+
+    // Bottom hardware strip reserves 84px; the deck lives above it.
+    let strip_h = 84.0;
+    let deck_rect = egui::Rect::from_min_max(
+        rect.min,
+        egui::pos2(rect.max.x, (rect.max.y - strip_h).max(rect.min.y)),
+    );
+    let strip_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.min.x, deck_rect.max.y),
+        rect.max,
+    );
+
     if !p.spin {
         painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(20, 16, 13));
-        draw_cover(ui, &painter, rect, p.art);
-        return;
+        draw_cover(ui, &painter, deck_rect, p.art);
+    } else {
+        draw_wood(&painter, rect);
+        draw_platter(ui, &painter, deck_rect, p);
     }
-    draw_wood(&painter, rect);
 
-    // Platter sits left-of-center to leave room for the tonearm.
-    let c = rect.center() + egui::vec2(-rect.width() * 0.07, 0.0);
-    let r = (rect.width().min(rect.height()) / 2.0 - 24.0).max(40.0);
+    // Hardware strip: LED left, chunky play center-left, volume fader right.
+    let led = egui::pos2(strip_rect.min.x + 26.0, strip_rect.center().y);
+    painter.circle_filled(led, 5.0, egui::Color32::from_rgb(60, 55, 50));
+    let led_col = if p.power {
+        egui::Color32::from_rgb(230, 60, 40)
+    } else {
+        egui::Color32::from_rgb(70, 25, 20)
+    };
+    painter.circle_filled(led, 3.0, led_col);
+
+    let play_center = egui::pos2(
+        strip_rect.min.x + 120.0,
+        strip_rect.center().y,
+    );
+    if chunky_button(ui, &painter, play_center, egui::vec2(104.0, 52.0), p.power) {
+        action.toggle_play = true;
+    }
+
+    let fader_rect = egui::Rect::from_center_size(
+        egui::pos2(strip_rect.max.x - 130.0, strip_rect.center().y),
+        egui::vec2(190.0, 52.0),
+    );
+    if let Some(v) = chunky_fader(ui, &painter, fader_rect, p.volume) {
+        action.volume = Some(v);
+    }
+
+    action
+}
+
+/// Big metal push-button. Returns true when clicked.
+fn chunky_button(
+    ui: &mut egui::Ui,
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    size: egui::Vec2,
+    active: bool,
+) -> bool {
+    let rect = egui::Rect::from_center_size(center, size);
+    let resp = ui.allocate_rect(rect, egui::Sense::click());
+    let pressed = resp.is_pointer_button_down_on();
+    let hover = resp.hovered();
+
+    // Bezel.
+    painter.rect_filled(rect, 10.0, egui::Color32::from_rgb(22, 20, 18));
+    painter.rect_stroke(
+        rect,
+        10.0,
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(90, 82, 72)),
+        egui::StrokeKind::Inside,
+    );
+    // Face: pressed face sits 2px lower.
+    let inset = if pressed { 7.0 } else { 5.0 };
+    let face = rect.shrink(inset);
+    let mut face_col = egui::Color32::from_rgb(168, 164, 158);
+    if hover {
+        face_col = egui::Color32::from_rgb(186, 182, 176);
+    }
+    if active {
+        face_col = egui::Color32::from_rgb(190, 170, 150);
+    }
+    painter.rect_filled(face, 7.0, face_col);
+    // Top highlight.
+    painter.line_segment(
+        [
+            egui::pos2(face.min.x + 8.0, face.min.y + 2.0),
+            egui::pos2(face.max.x - 8.0, face.min.y + 2.0),
+        ],
+        egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 90)),
+    );
+    // Glyph.
+    let glyph = if active { "❚❚" } else { "▶" };
+    painter.text(
+        face.center(),
+        egui::Align2::CENTER_CENTER,
+        glyph,
+        egui::FontId::proportional(24.0),
+        egui::Color32::from_rgb(30, 26, 22),
+    );
+    resp.clicked()
+}
+
+/// Horizontal fader: groove track + knurled metal knob. Drag or click the
+/// track to set. Returns the new value when changed.
+fn chunky_fader(
+    ui: &mut egui::Ui,
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    value: f32,
+) -> Option<f32> {
+    let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+    painter.text(
+        egui::pos2(rect.min.x, rect.min.y + 2.0),
+        egui::Align2::LEFT_TOP,
+        "VOLUME",
+        egui::FontId::proportional(11.0),
+        egui::Color32::from_rgb(150, 135, 120),
+    );
+    let track = egui::Rect::from_min_max(
+        egui::pos2(rect.min.x, rect.center().y + 2.0),
+        egui::pos2(rect.max.x, rect.center().y + 10.0),
+    );
+    painter.rect_filled(track, 4.0, egui::Color32::from_rgb(12, 10, 8));
+    painter.rect_stroke(
+        track,
+        4.0,
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(90, 82, 72)),
+        egui::StrokeKind::Inside,
+    );
+    // Fill portion.
+    let fill_w = (track.width() * value.clamp(0.0, 1.0)).max(4.0);
+    painter.rect_filled(
+        egui::Rect::from_min_max(track.min, egui::pos2(track.min.x + fill_w, track.max.y)),
+        4.0,
+        egui::Color32::from_rgb(150, 110, 60),
+    );
+    // Knob.
+    let kx = track.min.x + track.width() * value.clamp(0.0, 1.0);
+    let knob = egui::Rect::from_center_size(
+        egui::pos2(kx, track.center().y),
+        egui::vec2(22.0, 34.0),
+    );
+    painter.rect_filled(knob, 5.0, egui::Color32::from_rgb(175, 170, 163));
+    painter.rect_stroke(
+        knob,
+        5.0,
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(60, 55, 50)),
+        egui::StrokeKind::Inside,
+    );
+    for i in -1..=1 {
+        let x = knob.center().x + i as f32 * 6.0;
+        painter.line_segment(
+            [
+                egui::pos2(x, knob.min.y + 6.0),
+                egui::pos2(x, knob.max.y - 6.0),
+            ],
+            egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(90, 85, 78)),
+        );
+    }
+
+    if resp.clicked() || resp.dragged() {
+        if let Some(pos) = ui.input(|i| i.pointer.hover_pos().or(i.pointer.press_origin())) {
+            let v = ((pos.x - track.min.x) / track.width()).clamp(0.0, 1.0);
+            if (v - value).abs() > 0.001 {
+                return Some(v);
+            }
+        } else if resp.dragged() {
+            // Keyboard-driven drag without a pointer position: nudge.
+            let d = resp.drag_delta().x / track.width();
+            if d != 0.0 {
+                return Some((value + d).clamp(0.0, 1.0));
+            }
+        }
+    }
+    None
+}
+
+fn draw_platter(
+    ui: &mut egui::Ui,
+    painter: &egui::Painter,
+    deck_rect: egui::Rect,
+    p: &DeckParams,
+) {
+    // Platter centered in the deck area (not the whole window).
+    let c = deck_rect.center();
+    let r = (deck_rect.width().min(deck_rect.height()) / 2.0 - 12.0).max(40.0);
 
     // Metal platter + rubber mat.
     painter.circle_filled(c, r + 10.0, egui::Color32::from_rgb(150, 148, 145));
@@ -73,23 +258,26 @@ pub fn draw(ui: &mut egui::Ui, rect: egui::Rect, p: &DeckParams) {
     painter.circle_filled(c, 5.0, egui::Color32::from_rgb(180, 170, 160));
     painter.circle_filled(c, 2.0, egui::Color32::from_rgb(16, 14, 12));
 
-    draw_tonearm(&painter, c, r, p.arm, p.needle);
-
-    // Power LED, bottom-left of the deck.
-    let led = rect.left_bottom() + egui::vec2(24.0, -24.0);
-    let col = if p.power {
-        egui::Color32::from_rgb(230, 60, 40)
-    } else {
-        egui::Color32::from_rgb(70, 25, 20)
-    };
-    painter.circle_filled(led, 5.0, col);
+    draw_tonearm(painter, deck_rect, c, r, p.arm, p.needle);
 }
 
 /// Tonearm with pivot top-right of the platter. `arm` 0 = rest clip,
 /// 1 = needle dropped; mid-swing the headshell lifts slightly.
-fn draw_tonearm(painter: &egui::Painter, c: egui::Pos2, r: f32, arm: f32, needle: f32) {
-    let pivot = c + egui::vec2(r * 1.04, -r * 1.04);
-    let rest = c + egui::vec2(r * 1.30, r * 0.55);
+fn draw_tonearm(
+    painter: &egui::Painter,
+    deck_rect: egui::Rect,
+    c: egui::Pos2,
+    r: f32,
+    arm: f32,
+    needle: f32,
+) {
+    let mut pivot = c + egui::vec2(r * 1.04, -r * 1.04);
+    // Keep the pivot on the deck.
+    pivot.x = pivot.x.min(deck_rect.max.x - 24.0);
+    pivot.y = pivot.y.max(deck_rect.min.y + 24.0);
+    let mut rest = c + egui::vec2(r * 1.30, r * 0.55);
+    rest.x = rest.x.min(deck_rect.max.x - 14.0);
+    rest.y = rest.y.min(deck_rect.max.y - 14.0);
     // Groove point: right side, slightly below center, drifting inward.
     let g = r * (0.88 - 0.50 * needle.clamp(0.0, 1.0));
     let drop = c + egui::vec2(g * 0.91, g * 0.42);

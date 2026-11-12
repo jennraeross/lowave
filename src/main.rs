@@ -195,13 +195,22 @@ impl eframe::App for LowaveApp {
             arm: self.arm,
             needle: self.needle,
             power: playing,
+            volume: self.cfg.volume,
         };
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(16, 14, 12)))
             .show(ctx, |ui| {
                 let avail = ui.available_size();
                 let (rect, _) = ui.allocate_exact_size(avail, egui::Sense::hover());
-                deck::draw(ui, rect, &params);
+                let action = deck::draw(ui, rect, &params);
+                if action.toggle_play {
+                    self.toggle_play();
+                }
+                if let Some(v) = action.volume {
+                    self.cfg.volume = v;
+                    self.player.set_volume(v);
+                    let _ = config::save(&self.cfg);
+                }
             });
 
         // Hamburger, visible only when the sidebar is closed
@@ -220,27 +229,7 @@ impl eframe::App for LowaveApp {
                 });
         }
 
-        // Center play/stop overlay on hover.
-        if controls_visible && !self.show_sidebar {
-            let screen = ctx.screen_rect();
-            let center = screen.center();
-            egui::Area::new("transport".into())
-                .fixed_pos(center - egui::vec2(60.0, 60.0))
-                .show(ctx, |ui| {
-                    ui.set_min_size(egui::vec2(120.0, 120.0));
-                    ui.vertical_centered(|ui| {
-                        let glyph = if playing { "⏸" } else { "▶" };
-                        if ui
-                            .button(egui::RichText::new(glyph).size(44.0))
-                            .clicked()
-                        {
-                            self.toggle_play();
-                        }
-                    });
-                });
-        }
-
-        // Opaque status bar along the bottom, hover-only like the transport.
+        // Opaque status bar along the bottom, hover-only.
         if controls_visible && !self.show_sidebar {
             egui::Area::new("statusbar".into())
                 .anchor(egui::Align2::CENTER_BOTTOM, [0.0, 0.0])
