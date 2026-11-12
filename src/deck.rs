@@ -112,15 +112,35 @@ fn chunky_button(
         ],
         egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 90)),
     );
-    // Glyph.
-    let glyph = if active { "❚❚" } else { "▶" };
-    painter.text(
-        face.center(),
-        egui::Align2::CENTER_CENTER,
-        glyph,
-        egui::FontId::proportional(24.0),
-        egui::Color32::from_rgb(30, 26, 22),
-    );
+    // Glyph: text triangle for play, hand-drawn bars for pause
+    // (the ❚❚ glyph is missing from the bundled font).
+    if active {
+        let bw = 7.0;
+        let bh = 22.0;
+        let gap = 5.0;
+        let cy = face.center().y - bh / 2.0;
+        painter.rect_filled(
+            egui::Rect::from_min_size(
+                egui::pos2(face.center().x - gap - bw, cy),
+                egui::vec2(bw, bh),
+            ),
+            1.5,
+            egui::Color32::from_rgb(30, 26, 22),
+        );
+        painter.rect_filled(
+            egui::Rect::from_min_size(egui::pos2(face.center().x + gap, cy), egui::vec2(bw, bh)),
+            1.5,
+            egui::Color32::from_rgb(30, 26, 22),
+        );
+    } else {
+        painter.text(
+            face.center(),
+            egui::Align2::CENTER_CENTER,
+            "▶",
+            egui::FontId::proportional(24.0),
+            egui::Color32::from_rgb(30, 26, 22),
+        );
+    }
     resp.clicked()
 }
 
