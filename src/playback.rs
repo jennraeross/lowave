@@ -175,10 +175,7 @@ fn stream_into_sink(
             if filled == 0 {
                 break;
             }
-            let floats: Vec<f32> = pcm[..filled]
-                .chunks_exact(4)
-                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-                .collect();
+            let floats = pcm_bytes_to_f32(&pcm[..filled]);
             if floats.iter().all(|s| *s == 0.0) {
                 // Skip pure-silence padding; keep the pipe draining.
                 continue;
@@ -201,12 +198,23 @@ fn stream_into_sink(
     }
 }
 
+/// Convert raw little-endian f32 bytes from the ffmpeg pipe to samples.
+pub(crate) fn pcm_bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Headless smoke test: resolve -> ffmpeg PCM -> read 3s of audio.
-    /// Requires network + yt-dlp + ffmpeg.
+    /// Live-network smoke test: resolve -> ffmpeg PCM -> read 3s of audio.
+    /// Ignored by default: YouTube serves bot-checks to datacenter IPs, so
+    /// this fails in CI. Run locally with
+    /// `cargo test -- --include-ignored`.
+    #[ignore]
     #[test]
     fn decodes_live_audio_pipe() {
         let url = "https://www.youtube.com/watch?v=rFZHOHl-L8A";
@@ -229,10 +237,57 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
         assert!(filled > want / 2, "only got {filled}/{want} bytes");
-        let floats: Vec<f32> = buf[..filled]
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-            .collect();
+        let floats = pcm_bytes_to_f32(&buf[..filled]);
+        let energy: f32 = floats.iter().map(|s| s * s).sum::<f32>() / floats.len() as f32;
+        assert!(energy > 1e-8, "decoded silence (energy {energy})");
+    }
+
+    /// Hermetic version of the pipe test: ffmpeg synthesizes a 440Hz tone,
+    /// no network involved. Validates the ffmpeg pipe + f32 conversion path
+    /// that `stream_into_sink` uses.
+    #[test]
+    fn decodes_synthetic_pcm_pipe() {
+        let bin = ytdlp::find_ffmpeg().expect("find ffmpeg");
+        let mut child = std::process::Command::new(&bin)
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=3",
+                "-vn",
+                "-f",
+                "f32le",
+                "-ac",
+                "2",
+                "-ar",
+                "44100",
+                "-",
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn ffmpeg");
+        let mut stdout = child.stdout.take().expect("stdout");
+        // ~3s of stereo f32 @44.1k.
+        let want = SAMPLE_RATE as usize * 2 * 3 * 4;
+        let mut buf = vec![0u8; want];
+        let mut filled = 0;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while filled < want && std::time::Instant::now() < deadline {
+            match stdout.read(&mut buf[filled..]) {
+                Ok(0) => std::thread::sleep(std::time::Duration::from_millis(50)),
+                Ok(n) => filled += n,
+                Err(_) => break,
+            }
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(filled > want / 2, "only got {filled}/{want} bytes");
+        let floats = pcm_bytes_to_f32(&buf[..filled]);
         let energy: f32 = floats.iter().map(|s| s * s).sum::<f32>() / floats.len() as f32;
         assert!(energy > 1e-8, "decoded silence (energy {energy})");
     }

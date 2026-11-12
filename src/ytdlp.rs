@@ -232,6 +232,10 @@ pub fn spawn_pcm_pipe(media_url: &str) -> Result<std::process::Child> {
 mod tests {
     use super::*;
 
+    /// Hits live YouTube; ignored by default since datacenter IPs get
+    /// bot-checked (fails in CI). Run locally with
+    /// `cargo test -- --include-ignored`.
+    #[ignore]
     #[test]
     fn lists_lofi_streams_tab() {
         let entries = list_live("https://www.youtube.com/@LofiGirl/streams");

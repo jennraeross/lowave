@@ -47,10 +47,14 @@ downloaded thumbnails are cached under `lowave/art/`.
 Note: release builds on Windows hide the console window; `cargo run`
 (debug) keeps it for log output.
 
-## Tests (need network + the two binaries above)
+## Tests
+
+`cargo test` runs the hermetic suite (ffmpeg synthetic-tone pipe test — no
+network). The two live-YouTube tests are ignored by default because
+datacenter IPs get bot-checked; run them locally with:
 
 ```
-cargo test
+cargo test -- --include-ignored
 ```
 
 ## License
