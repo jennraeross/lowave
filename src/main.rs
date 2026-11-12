@@ -39,8 +39,6 @@ struct LowaveApp {
     loading: bool,
     show_sidebar: bool,
     last_frame: std::time::Instant,
-    last_pointer: Option<egui::Pos2>,
-    last_move: std::time::Instant,
 }
 
 impl LowaveApp {
@@ -66,8 +64,6 @@ impl LowaveApp {
             loading: true,
             show_sidebar: false,
             last_frame: now,
-            last_pointer: None,
-            last_move: now,
         };
         app.refresh_entries();
         app
@@ -165,14 +161,6 @@ impl eframe::App for LowaveApp {
             self.needle = (self.needle + dt * 0.002).min(1.0);
         }
 
-        // Track pointer movement for auto-hide.
-        if ctx.pointer_hover_pos() != self.last_pointer {
-            self.last_pointer = ctx.pointer_hover_pos();
-            self.last_move = now;
-        }
-        let idle = now.duration_since(self.last_move).as_secs_f32();
-        let controls_visible = self.show_sidebar || !playing || idle < 2.0;
-
         // Dark analog theme, no panel chrome.
         ctx.set_visuals(egui::Visuals {
             dark_mode: true,
@@ -224,27 +212,11 @@ impl eframe::App for LowaveApp {
                         .clicked()
                     {
                         self.show_sidebar = true;
-                        self.last_move = std::time::Instant::now();
                     }
                 });
         }
 
         // Opaque status bar along the bottom, hover-only.
-        if controls_visible && !self.show_sidebar {
-            egui::Area::new("statusbar".into())
-                .anchor(egui::Align2::CENTER_BOTTOM, [0.0, 0.0])
-                .show(ctx, |ui| {
-                    egui::Frame::NONE
-                        .fill(egui::Color32::from_rgba_unmultiplied(10, 8, 6, 230))
-                        .inner_margin(egui::Margin::symmetric(16, 8))
-                        .show(ui, |ui| {
-                            ui.set_min_size(egui::vec2(ctx.screen_rect().width(), 0.0));
-                            ui.vertical_centered(|ui| {
-                                ui.monospace(&self.status_text);
-                            });
-                        });
-                });
-        }
 
         // Sidebar overlay.
         if self.show_sidebar {
