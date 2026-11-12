@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config curl \
+            libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxkbcommon-dev libssl-dev \
+            ffmpeg python3-pip
+
+      - name: Install yt-dlp (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          python3 -m pip install --user --break-system-packages yt-dlp
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install yt-dlp + ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install yt-dlp ffmpeg
+
+      - name: Install yt-dlp + ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install yt-dlp ffmpeg -y
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Check versions
+        run: |
+          yt-dlp --version
+          ffmpeg -version | head -1
+
+      - name: Test
+        run: cargo test --locked --verbose
