@@ -69,6 +69,11 @@ playlist), remote audio URLs, or `#EXTINF` titles. Local/remote entries play
 directly through ffmpeg with no YouTube involved. Imports persist in config
 and are re-parsed on launch, so editing the file updates the list.
 
+"＋ new playlist" (or "edit" on any imported playlist) opens the built-in
+builder: name it, pull streams in with ＋, add local files or pasted URLs,
+reorder with ↑/↓, then save to `.m3u` — overwriting in place when editing,
+or via save dialog for new lists.
+
 ## Tests
 
 `cargo test` runs the hermetic suite (ffmpeg synthetic-tone pipe test — no

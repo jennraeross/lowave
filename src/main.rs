@@ -33,6 +33,17 @@ enum SideTab {
     Playlists,
 }
 
+/// In-progress playlist being built/edited. Saved to disk as .m3u, then
+/// takes the normal import path (config + re-parse).
+struct PlaylistDraft {
+    name: String,
+    entries: Vec<playlist::DraftEntry>,
+    /// Existing file when editing an imported playlist (save overwrites it).
+    edit_path: Option<std::path::PathBuf>,
+    new_url: String,
+    new_title: String,
+}
+
 struct LowaveApp {
     cfg: AppConfig,
     entries: Vec<LiveEntry>,
@@ -47,6 +58,7 @@ struct LowaveApp {
     play_time: f32,
     side_tab: SideTab,
     playlists: Vec<playlist::PlaylistFile>,
+    draft: Option<PlaylistDraft>,
     new_name: String,
     new_url: String,
     loading: bool,
@@ -75,6 +87,7 @@ impl LowaveApp {
             play_time: 0.0,
             side_tab: SideTab::Streams,
             playlists: Vec::new(),
+            draft: None,
             new_name: String::new(),
             new_url: String::new(),
             loading: true,
@@ -173,6 +186,59 @@ impl LowaveApp {
         }
     }
 
+    /// Ensure a draft exists, then add a stream entry to it and jump to the
+    /// Playlists tab so the editor is visible.
+    fn add_stream_to_draft(&mut self, i: usize) {
+        if let Some(e) = self.entries.get(i) {
+            let draft = self.draft.get_or_insert_with(|| PlaylistDraft {
+                name: "New playlist".to_string(),
+                entries: Vec::new(),
+                edit_path: None,
+                new_url: String::new(),
+                new_title: String::new(),
+            });
+            draft.entries.push(playlist::DraftEntry::new(
+                e.title.clone(),
+                e.url.clone(),
+            ));
+            self.side_tab = SideTab::Playlists;
+        }
+    }
+
+    /// Load an imported playlist file back into the draft for editing.
+    fn edit_playlist(&mut self, name: &str, path: &std::path::Path) {
+        let parsed = playlist::load_m3u(name, path);
+        self.draft = Some(PlaylistDraft {
+            name: name.to_string(),
+            entries: parsed
+                .entries
+                .iter()
+                .map(|e| playlist::DraftEntry::new(e.title.clone(), e.url.clone()))
+                .collect(),
+            edit_path: Some(path.to_path_buf()),
+            new_url: String::new(),
+            new_title: String::new(),
+        });
+    }
+
+    /// Write the draft to disk (.m3u) and import the result.
+    fn save_draft(&mut self, path: std::path::PathBuf) {
+        if let Some(d) = &self.draft {
+            if playlist::write_m3u(&path, &d.entries).is_ok() {
+                let ps = path.to_string_lossy().to_string();
+                if !self.cfg.playlists.iter().any(|p| p.path == ps) {
+                    self.cfg.playlists.push(UserPlaylist {
+                        name: d.name.clone(),
+                        path: ps,
+                    });
+                    let _ = config::save(&self.cfg);
+                }
+                self.draft = None;
+                self.refresh_entries();
+            }
+        }
+    }
+
     fn toggle_play(&mut self) {
         match self.player.status() {
             PlaybackStatus::Playing(_) => self.player.stop(),
@@ -192,22 +258,36 @@ impl LowaveApp {
             egui::Layout::top_down_justified(egui::Align::LEFT),
             |ui| {
                 let mut clicked: Option<usize> = None;
+                let mut add_to_draft: Option<usize> = None;
                 for (i, e) in self.entries.iter().enumerate() {
                     if e.playlist.is_some() {
                         continue;
                     }
-                    let dot = if e.is_live { "● " } else { "○ " };
-                    let label = format!("{dot}{}", e.title);
-                    let sel = self.selected == Some(i);
-                    if ui.selectable_label(sel, label).clicked() {
-                        clicked = Some(i);
-                    }
+                    ui.horizontal(|ui| {
+                        let dot = if e.is_live { "● " } else { "○ " };
+                        let label = format!("{dot}{}", e.title);
+                        let sel = self.selected == Some(i);
+                        if ui.selectable_label(sel, label).clicked() {
+                            clicked = Some(i);
+                        }
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if ui.small_button("＋").on_hover_text("add to playlist draft").clicked() {
+                                    add_to_draft = Some(i);
+                                }
+                            },
+                        );
+                    });
                     if let Some(v) = e.viewers {
                         ui.weak(format!("   {v} watching"));
                     }
                 }
                 if let Some(i) = clicked {
                     self.play_entry(i);
+                }
+                if let Some(i) = add_to_draft {
+                    self.add_stream_to_draft(i);
                 }
             },
         );
@@ -251,8 +331,13 @@ impl LowaveApp {
         });
     }
 
-    /// Playlists tab: imported .m3u files, grouped with their entries.
+    /// Playlists tab: imported .m3u files, grouped with their entries —
+    /// or the builder editor when a draft is open.
     fn playlists_tab(&mut self, ui: &mut egui::Ui) {
+        if self.draft.is_some() {
+            self.draft_editor(ui);
+            return;
+        }
         ui.horizontal(|ui| {
             if ui.button("＋ import .m3u").clicked() {
                 if let Some(path) = rfd::FileDialog::new()
@@ -261,6 +346,15 @@ impl LowaveApp {
                 {
                     self.import_playlists(vec![path]);
                 }
+            }
+            if ui.button("＋ new playlist").clicked() {
+                self.draft = Some(PlaylistDraft {
+                    name: "New playlist".to_string(),
+                    entries: Vec::new(),
+                    edit_path: None,
+                    new_url: String::new(),
+                    new_title: String::new(),
+                });
             }
             if ui.button("⟳").clicked() {
                 self.refresh_entries();
@@ -272,6 +366,7 @@ impl LowaveApp {
             return;
         }
         let mut remove: Option<String> = None;
+        let mut edit: Option<(String, std::path::PathBuf)> = None;
         let mut clicked: Option<usize> = None;
         for pl in &self.playlists {
             ui.horizontal(|ui| {
@@ -281,6 +376,9 @@ impl LowaveApp {
                     |ui| {
                         if ui.small_button("remove").clicked() {
                             remove = Some(pl.path.to_string_lossy().to_string());
+                        }
+                        if ui.small_button("edit").clicked() {
+                            edit = Some((pl.name.clone(), pl.path.clone()));
                         }
                     },
                 );
@@ -305,6 +403,9 @@ impl LowaveApp {
         if let Some(i) = clicked {
             self.play_entry(i);
         }
+        if let Some((name, path)) = edit {
+            self.edit_playlist(&name, &path);
+        }
         if let Some(path) = remove {
             self.cfg.playlists.retain(|p| p.path != path);
             if let Some(i) = self.selected {
@@ -319,6 +420,130 @@ impl LowaveApp {
             }
             let _ = config::save(&self.cfg);
             self.refresh_entries();
+        }
+    }
+
+    /// Builder editor: rename, reorder/remove entries, add URL or files,
+    /// then save to .m3u (overwrites when editing, save-dialog otherwise).
+    fn draft_editor(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.heading("Playlist builder");
+            ui.with_layout(
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    if ui.small_button("cancel").clicked() {
+                        self.draft = None;
+                    }
+                },
+            );
+        });
+        ui.label("Name:");
+        let mut save_to: Option<std::path::PathBuf> = None;
+        let mut cancel = false;
+        if let Some(d) = self.draft.as_mut() {
+            ui.text_edit_singleline(&mut d.name);
+            let n = d.entries.len();
+            let mut mv: Option<(usize, i32)> = None;
+            let mut rm: Option<usize> = None;
+            egui::ScrollArea::vertical()
+                .max_height(220.0)
+                .show(ui, |ui| {
+                    for (i, e) in d.entries.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{}. {}", i + 1, e.title));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.small_button("×").clicked() {
+                                        rm = Some(i);
+                                    }
+                                    if ui.small_button("↓").clicked() {
+                                        mv = Some((i, 1));
+                                    }
+                                    if ui.small_button("↑").clicked() {
+                                        mv = Some((i, -1));
+                                    }
+                                },
+                            );
+                        });
+                        ui.weak(&e.target);
+                    }
+                });
+            if n == 0 {
+                ui.weak("empty — add streams with ＋, files, or a URL below");
+            }
+            ui.separator();
+            ui.label("Add URL:");
+            ui.text_edit_singleline(&mut d.new_url)
+                .on_hover_text("youtube or direct audio URL");
+            ui.label("Title (optional):");
+            ui.text_edit_singleline(&mut d.new_title);
+            ui.horizontal(|ui| {
+                let url_ok = !d.new_url.trim().is_empty();
+                if ui.add_enabled(url_ok, egui::Button::new("＋ add URL")).clicked() {
+                    let target = d.new_url.trim().to_string();
+                    let title = if d.new_title.trim().is_empty() {
+                        target.clone()
+                    } else {
+                        d.new_title.trim().to_string()
+                    };
+                    d.entries.push(playlist::DraftEntry::new(title, target));
+                    d.new_url.clear();
+                    d.new_title.clear();
+                }
+                if ui.button("＋ add files").clicked() {
+                    if let Some(paths) = rfd::FileDialog::new()
+                        .add_filter(
+                            "audio",
+                            &["mp3", "m4a", "flac", "wav", "ogg", "opus", "aac", "wma"],
+                        )
+                        .pick_files()
+                    {
+                        for p in paths {
+                            let target = p.to_string_lossy().to_string();
+                            let title = p
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("track")
+                                .to_string();
+                            d.entries.push(playlist::DraftEntry::new(title, target));
+                        }
+                    }
+                }
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                let can_save = !d.name.trim().is_empty() && !d.entries.is_empty();
+                if ui.add_enabled(can_save, egui::Button::new("save")).clicked() {
+                    if let Some(p) = d.edit_path.clone() {
+                        save_to = Some(p);
+                    } else if let Some(p) = rfd::FileDialog::new()
+                        .set_file_name(format!("{}.m3u", d.name.trim()))
+                        .add_filter("m3u playlist", &["m3u"])
+                        .save_file()
+                    {
+                        save_to = Some(p);
+                    }
+                }
+                if ui.small_button("cancel").clicked() {
+                    cancel = true;
+                }
+            });
+            if let Some((i, dir)) = mv {
+                let j = (i as i32 + dir).clamp(0, n as i32 - 1) as usize;
+                if j != i {
+                    d.entries.swap(i, j);
+                }
+            }
+            if let Some(i) = rm {
+                d.entries.remove(i);
+            }
+        }
+        if let Some(p) = save_to {
+            self.save_draft(p);
+        }
+        if cancel {
+            self.draft = None;
         }
     }
 

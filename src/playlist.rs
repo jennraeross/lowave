@@ -86,8 +86,35 @@ pub fn load_m3u(name: &str, path: &Path) -> PlaylistFile {
     }
 }
 
-fn display_name(line: &str) -> String {
-    // Last path segment, minus query strings and extension.
+/// One editable builder row: display title + target (local path or URL).
+#[derive(Debug, Clone)]
+pub struct DraftEntry {
+    pub title: String,
+    pub target: String,
+}
+
+impl DraftEntry {
+    pub fn new(title: String, target: String) -> Self {
+        Self {
+            title: title.lines().next().unwrap_or("").to_string(),
+            target: target.lines().next().unwrap_or("").to_string(),
+        }
+    }
+}
+
+/// Write entries as `#EXTM3U` with `#EXTINF` titles. One entry per line, so
+/// embedded newlines are stripped on the way in (see `DraftEntry::new`).
+pub fn write_m3u(path: &Path, entries: &[DraftEntry]) -> std::io::Result<()> {
+    use std::fmt::Write as _;
+    let mut out = String::from("#EXTM3U\n");
+    for e in entries {
+        let _ = writeln!(out, "#EXTINF:-1,{}", e.title);
+        let _ = writeln!(out, "{}", e.target);
+    }
+    std::fs::write(path, out)
+}
+
+fn display_name(line: &str) -> String {    // Last path segment, minus query strings and extension.
     let seg = line.rsplit(['/', '\\']).next().unwrap_or(line);
     let seg = seg.split('?').next().unwrap_or(seg);
     if let Some(dot) = seg.rfind('.') {
@@ -132,5 +159,32 @@ mod tests {
         );
         assert_eq!(parsed.entries[1].title, "stream");
         assert_eq!(parsed.entries[1].playlist.as_deref(), Some("mix"));
+    }
+
+    #[test]
+    fn write_then_parse_round_trips() {
+        let dir = std::env::temp_dir().join("lowave-test-m3u");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("track one.mp3"), b"fake").unwrap();
+        let entries = vec![
+            DraftEntry::new(
+                "Artist - Title, with comma".into(),
+                dir.join("track one.mp3").to_string_lossy().to_string(),
+            ),
+            DraftEntry::new("Remote".into(), "https://example.com/live".into()),
+            // Newline in a title is stripped so the file stays line-based.
+            DraftEntry::new(
+                "Multi\nline title".into(),
+                dir.join("track one.mp3").to_string_lossy().to_string(),
+            ),
+        ];
+        let path = dir.join("roundtrip.m3u");
+        write_m3u(&path, &entries).unwrap();
+        let parsed = load_m3u("rt", &path);
+        assert_eq!(parsed.entries.len(), 3, "kept entries only");
+        assert_eq!(parsed.missing, 0);
+        assert_eq!(parsed.entries[0].title, "Artist - Title, with comma");
+        assert_eq!(parsed.entries[1].title, "Remote");
+        assert_eq!(parsed.entries[2].title, "Multi");
     }
 }
