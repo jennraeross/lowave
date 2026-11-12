@@ -40,6 +40,19 @@ sudo apt install build-essential pkg-config curl \
 cargo run --release
 ```
 
+## Releases
+
+Pushing a `v*` tag builds release archives for Linux x64, Windows x64, and
+macOS (ARM64 + Intel) and publishes them as a GitHub Release:
+
+```
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+Each archive contains the `lowave` binary, a `yt-dlp` sidecar (auto-found
+next to the binary), `README.md`, and `LICENSE-MIT`. `ffmpeg` is still
+required separately (see table above).
+
 Config + volume + last-played stream persist to the OS config dir as
 `lowave/streams.toml` (`%APPDATA%` on Windows, `~/.config` on Linux);
 downloaded thumbnails are cached under `lowave/art/`.

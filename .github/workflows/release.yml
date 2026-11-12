@@ -1,0 +1,104 @@
+name: release
+
+# Cut a release with:
+#   git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: lowave-x86_64-linux
+            ytdlp: yt-dlp_linux
+            sidecar: yt-dlp
+          - os: windows-latest
+            asset: lowave-x86_64-windows
+            ytdlp: yt-dlp.exe
+            sidecar: yt-dlp.exe
+          - os: macos-latest
+            asset: lowave-aarch64-macos
+            ytdlp: yt-dlp_macos
+            sidecar: yt-dlp
+          - os: macos-15-intel
+            asset: lowave-x86_64-macos
+            ytdlp: yt-dlp_macos
+            sidecar: yt-dlp
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config curl \
+            libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxkbcommon-dev libssl-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release
+        run: cargo build --release --locked
+
+      - name: Stage archive
+        shell: bash
+        run: |
+          rm -rf dist && mkdir dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp target/release/lowave.exe dist/
+          else
+            cp target/release/lowave dist/
+          fi
+          cp README.md LICENSE-MIT dist/
+          # Bundle a yt-dlp sidecar (Unlicense) next to the binary; the app
+          # looks beside its exe first. ffmpeg is still required separately.
+          curl -sSL -o "dist/${{ matrix.sidecar }}" \
+            "https://github.com/yt-dlp/yt-dlp/releases/latest/download/${{ matrix.ytdlp }}"
+          chmod +x "dist/${{ matrix.sidecar }}" 2>/dev/null || true
+
+      - name: Pack archive
+        shell: bash
+        run: |
+          cd dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a "../${{ matrix.asset }}.zip" *
+          else
+            tar czf "../${{ matrix.asset }}.tar.gz" *
+          fi
+          cd ..
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            ${{ matrix.asset }}.zip
+            ${{ matrix.asset }}.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" artifacts/* \
+            --title "${{ github.ref_name }}" \
+            --generate-notes
+          echo "Released ${{ github.ref_name }}. Each archive holds the lowave binary plus a yt-dlp sidecar; ffmpeg must still be installed separately."
