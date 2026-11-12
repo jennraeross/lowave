@@ -5,10 +5,11 @@ mod cassette;
 mod config;
 mod deck;
 mod playback;
+mod playlist;
 mod ytdlp;
 
 use art::ArtCache;
-use config::{AppConfig, UserStream, ViewMode};
+use config::{AppConfig, UserPlaylist, UserStream, ViewMode};
 use eframe::egui;
 use playback::{PlaybackController, PlaybackStatus};
 use ytdlp::LiveEntry;
@@ -26,6 +27,12 @@ fn main() -> eframe::Result<()> {
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SideTab {
+    Streams,
+    Playlists,
+}
+
 struct LowaveApp {
     cfg: AppConfig,
     entries: Vec<LiveEntry>,
@@ -38,6 +45,8 @@ struct LowaveApp {
     arm: f32,
     needle: f32,
     play_time: f32,
+    side_tab: SideTab,
+    playlists: Vec<playlist::PlaylistFile>,
     new_name: String,
     new_url: String,
     loading: bool,
@@ -64,6 +73,8 @@ impl LowaveApp {
             arm: 0.0,
             needle: 0.0,
             play_time: 0.0,
+            side_tab: SideTab::Streams,
+            playlists: Vec::new(),
             new_name: String::new(),
             new_url: String::new(),
             loading: true,
@@ -92,6 +103,15 @@ impl LowaveApp {
         }
         // Live entries first.
         out.sort_by_key(|e| !e.is_live);
+        // Then imported .m3u playlists, re-parsed from disk.
+        let mut pls = Vec::new();
+        for pl in &self.cfg.playlists {
+            let parsed =
+                playlist::load_m3u(&pl.name, &std::path::PathBuf::from(&pl.path));
+            out.extend(parsed.entries.iter().cloned());
+            pls.push(parsed);
+        }
+        self.playlists = pls;
         self.entries = out;
         // Re-select: last-played stream if still present, else the classic
         // beats to relax/study to, else the first live entry.
@@ -119,7 +139,37 @@ impl LowaveApp {
             let _ = config::save(&self.cfg);
             self.needle = 0.0;
             self.play_time = 0.0;
-            self.player.play(e.url.clone());
+            self.player.play(e.title.clone(), e.media.clone());
+        }
+    }
+
+    /// Import .m3u files as named playlists (dedupes by path).
+    fn import_playlists(&mut self, paths: Vec<std::path::PathBuf>) {
+        let mut changed = false;
+        for path in paths {
+            let is_m3u = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("m3u") || e.eq_ignore_ascii_case("m3u8"))
+                .unwrap_or(false);
+            if !is_m3u || !path.is_file() {
+                continue;
+            }
+            let ps = path.to_string_lossy().to_string();
+            if self.cfg.playlists.iter().any(|p| p.path == ps) {
+                continue;
+            }
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("playlist")
+                .to_string();
+            self.cfg.playlists.push(UserPlaylist { name, path: ps });
+            changed = true;
+        }
+        if changed {
+            let _ = config::save(&self.cfg);
+            self.refresh_entries();
         }
     }
 
@@ -131,6 +181,144 @@ impl LowaveApp {
                     self.play_entry(i);
                 }
             }
+        }
+    }
+
+    /// Streams tab: YouTube entries + add/remove.
+    fn streams_tab(&mut self, ui: &mut egui::Ui) {
+        // Full-width rows: justified layout stretches
+        // each selectable label across the panel.
+        ui.with_layout(
+            egui::Layout::top_down_justified(egui::Align::LEFT),
+            |ui| {
+                let mut clicked: Option<usize> = None;
+                for (i, e) in self.entries.iter().enumerate() {
+                    if e.playlist.is_some() {
+                        continue;
+                    }
+                    let dot = if e.is_live { "● " } else { "○ " };
+                    let label = format!("{dot}{}", e.title);
+                    let sel = self.selected == Some(i);
+                    if ui.selectable_label(sel, label).clicked() {
+                        clicked = Some(i);
+                    }
+                    if let Some(v) = e.viewers {
+                        ui.weak(format!("   {v} watching"));
+                    }
+                }
+                if let Some(i) = clicked {
+                    self.play_entry(i);
+                }
+            },
+        );
+        ui.separator();
+        ui.label("Add stream:");
+        ui.label("Name:");
+        ui.text_edit_singleline(&mut self.new_name)
+            .on_hover_text("display name for the stream");
+        ui.label("URL:");
+        ui.text_edit_singleline(&mut self.new_url)
+            .on_hover_text("youtube video, live or channel URL");
+        ui.horizontal(|ui| {
+            if ui.button("＋ add").clicked() && !self.new_url.trim().is_empty() {
+                let name = if self.new_name.trim().is_empty() {
+                    self.new_url.trim().to_string()
+                } else {
+                    self.new_name.trim().to_string()
+                };
+                self.cfg.streams.push(UserStream {
+                    name,
+                    url: self.new_url.trim().to_string(),
+                });
+                let _ = config::save(&self.cfg);
+                self.new_name.clear();
+                self.new_url.clear();
+                self.refresh_entries();
+            }
+            if ui.button("− remove").clicked() {
+                if let Some(i) = self.selected {
+                    if let Some(entry) = self.entries.get(i).filter(|e| e.playlist.is_none()) {
+                        self.cfg.streams.retain(|s| s.url != entry.url);
+                        if self.cfg.last_url.as_ref() == Some(&entry.url) {
+                            self.cfg.last_url = None;
+                        }
+                        let _ = config::save(&self.cfg);
+                        self.selected = None;
+                        self.refresh_entries();
+                    }
+                }
+            }
+        });
+    }
+
+    /// Playlists tab: imported .m3u files, grouped with their entries.
+    fn playlists_tab(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            if ui.button("＋ import .m3u").clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("playlists", &["m3u", "m3u8"])
+                    .pick_file()
+                {
+                    self.import_playlists(vec![path]);
+                }
+            }
+            if ui.button("⟳").clicked() {
+                self.refresh_entries();
+            }
+        });
+        ui.weak("tip: drag & drop .m3u files anywhere");
+        if self.playlists.is_empty() {
+            ui.weak("no playlists yet");
+            return;
+        }
+        let mut remove: Option<String> = None;
+        let mut clicked: Option<usize> = None;
+        for pl in &self.playlists {
+            ui.horizontal(|ui| {
+                ui.heading(pl.name.clone());
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        if ui.small_button("remove").clicked() {
+                            remove = Some(pl.path.to_string_lossy().to_string());
+                        }
+                    },
+                );
+            });
+            if pl.missing > 0 {
+                ui.weak(format!("{} file(s) missing", pl.missing));
+            }
+            ui.with_layout(
+                egui::Layout::top_down_justified(egui::Align::LEFT),
+                |ui| {
+                    for (i, e) in self.entries.iter().enumerate() {
+                        if e.playlist.as_deref() != Some(pl.name.as_str()) {
+                            continue;
+                        }
+                        if ui.selectable_label(self.selected == Some(i), &e.title).clicked() {
+                            clicked = Some(i);
+                        }
+                    }
+                },
+            );
+        }
+        if let Some(i) = clicked {
+            self.play_entry(i);
+        }
+        if let Some(path) = remove {
+            self.cfg.playlists.retain(|p| p.path != path);
+            if let Some(i) = self.selected {
+                if self
+                    .entries
+                    .get(i)
+                    .and_then(|e| e.playlist.clone())
+                    .is_some()
+                {
+                    self.selected = None;
+                }
+            }
+            let _ = config::save(&self.cfg);
+            self.refresh_entries();
         }
     }
 
@@ -151,9 +339,20 @@ impl eframe::App for LowaveApp {
         let dt = (now - self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
 
+        // Drag-and-drop .m3u import.
+        let dropped: Vec<std::path::PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .filter_map(|f| f.path.clone())
+                .collect()
+        });
+        if !dropped.is_empty() {
+            self.import_playlists(dropped);
+        }
+
         let st = self.player.status();
-        let playing = matches!(st, PlaybackStatus::Playing(_));
-        self.status_text = match &st {
+        let playing = matches!(st, PlaybackStatus::Playing(_));        self.status_text = match &st {
             PlaybackStatus::Stopped => "stopped".to_string(),
             PlaybackStatus::Buffering(u) => format!("buffering… {u}"),
             PlaybackStatus::Playing(u) => format!("playing {u}"),
@@ -283,7 +482,7 @@ impl eframe::App for LowaveApp {
                                 .max_height(screen.height())
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
-                                        ui.heading("Streams");
+                                        ui.heading("Library");
                                         ui.with_layout(
                                             egui::Layout::right_to_left(egui::Align::Center),
                                             |ui| {
@@ -299,68 +498,31 @@ impl eframe::App for LowaveApp {
                                     if self.loading {
                                         ui.spinner();
                                     }
-                                    // Full-width rows: justified layout stretches
-                                    // each selectable label across the panel.
-                                    ui.with_layout(
-                                        egui::Layout::top_down_justified(egui::Align::LEFT),
-                                        |ui| {
-                                            let mut clicked: Option<usize> = None;
-                                            for (i, e) in self.entries.iter().enumerate() {
-                                                let dot = if e.is_live { "● " } else { "○ " };
-                                                let label = format!("{dot}{}", e.title);
-                                                let sel = self.selected == Some(i);
-                                                if ui.selectable_label(sel, label).clicked() {
-                                                    clicked = Some(i);
-                                                }
-                                                if let Some(v) = e.viewers {
-                                                    ui.weak(format!("   {v} watching"));
-                                                }
-                                            }
-                                            if let Some(i) = clicked {
-                                                self.play_entry(i);
-                                            }
-                                        },
-                                    );
-                                    ui.separator();
-                                    ui.label("Add stream:");
-                                    ui.label("Name:");
-                                    ui.text_edit_singleline(&mut self.new_name)
-                                        .on_hover_text("display name for the stream");
-                                    ui.label("URL:");
-                                    ui.text_edit_singleline(&mut self.new_url)
-                                        .on_hover_text("youtube video, live or channel URL");
+                                    // Tabs: streams vs imported .m3u playlists.
                                     ui.horizontal(|ui| {
-                                        if ui.button("＋ add").clicked()
-                                            && !self.new_url.trim().is_empty()
+                                        if ui
+                                            .selectable_label(
+                                                self.side_tab == SideTab::Streams,
+                                                "Streams",
+                                            )
+                                            .clicked()
                                         {
-                                            let name = if self.new_name.trim().is_empty() {
-                                                self.new_url.trim().to_string()
-                                            } else {
-                                                self.new_name.trim().to_string()
-                                            };
-                                            self.cfg.streams.push(UserStream {
-                                                name,
-                                                url: self.new_url.trim().to_string(),
-                                            });
-                                            let _ = config::save(&self.cfg);
-                                            self.new_name.clear();
-                                            self.new_url.clear();
-                                            self.refresh_entries();
+                                            self.side_tab = SideTab::Streams;
                                         }
-                                        if ui.button("− remove").clicked() {
-                                            if let Some(i) = self.selected {
-                                                if let Some(entry) = self.entries.get(i) {
-                                                    self.cfg.streams.retain(|s| s.url != entry.url);
-                                                    if self.cfg.last_url.as_ref() == Some(&entry.url) {
-                                                        self.cfg.last_url = None;
-                                                    }
-                                                    let _ = config::save(&self.cfg);
-                                                    self.selected = None;
-                                                    self.refresh_entries();
-                                                }
-                                            }
+                                        if ui
+                                            .selectable_label(
+                                                self.side_tab == SideTab::Playlists,
+                                                "Playlists",
+                                            )
+                                            .clicked()
+                                        {
+                                            self.side_tab = SideTab::Playlists;
                                         }
                                     });
+                                    match self.side_tab {
+                                        SideTab::Streams => self.streams_tab(ui),
+                                        SideTab::Playlists => self.playlists_tab(ui),
+                                    }
                                     ui.separator();
                                     ui.horizontal(|ui| {
                                         ui.label("vol");

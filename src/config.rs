@@ -33,6 +33,12 @@ impl ViewMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserPlaylist {
+    pub name: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     #[serde(default = "default_streams")]
     pub streams: Vec<UserStream>,
@@ -44,6 +50,9 @@ pub struct AppConfig {
     /// Whether the disc spins while playing.
     #[serde(default = "default_true")]
     pub spin: bool,
+    /// Imported .m3u playlists (re-parsed from disk on launch).
+    #[serde(default)]
+    pub playlists: Vec<UserPlaylist>,
     /// Centerpiece view.
     #[serde(default)]
     pub view: ViewMode,
@@ -77,6 +86,7 @@ impl Default for AppConfig {
             volume: 0.8,
             last_url: None,
             spin: true,
+            playlists: Vec::new(),
             view: ViewMode::Vinyl,
         }
     }

@@ -2,6 +2,14 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MediaKind {
+    /// YouTube page URL: resolve via `yt-dlp -g`, refresh on expiry.
+    YouTube(String),
+    /// Direct audio: local file path or remote audio URL, fed to ffmpeg as-is.
+    Direct(String),
+}
+
 #[derive(Debug, Clone)]
 pub struct LiveEntry {
     pub id: String,
@@ -10,6 +18,9 @@ pub struct LiveEntry {
     pub is_live: bool,
     pub viewers: Option<u64>,
     pub thumbnail: Option<String>,
+    pub media: MediaKind,
+    /// Playlist this entry came from, if any.
+    pub playlist: Option<String>,
 }
 
 /// YouTube thumbnails are predictable; works even when flat-playlist JSON
@@ -68,6 +79,8 @@ pub fn list_live(channel_or_video_url: &str) -> Vec<LiveEntry> {
             is_live: true,
             viewers: None,
             thumbnail: None,
+            media: MediaKind::YouTube(channel_or_video_url.to_string()),
+            playlist: None,
         }],
     }
 }
@@ -101,10 +114,12 @@ fn list_live_inner(url: &str) -> Result<Vec<LiveEntry>> {
         entries.push(LiveEntry {
             id: id.to_string(),
             title: title.to_string(),
-            url: page_url,
+            url: page_url.clone(),
             is_live,
             viewers: v.get("view_count").and_then(|n| n.as_u64()),
             thumbnail: (!id.is_empty()).then(|| thumbnail_url(id)),
+            media: MediaKind::YouTube(page_url),
+            playlist: None,
         });
         return Ok(entries);
     }
@@ -125,13 +140,16 @@ fn list_live_inner(url: &str) -> Result<Vec<LiveEntry>> {
                 .get("is_live")
                 .and_then(|b| b.as_bool())
                 .unwrap_or(live_status == "is_live");
+            let page_url = format!("https://www.youtube.com/watch?v={id}");
             entries.push(LiveEntry {
                 id: id.to_string(),
                 title,
-                url: format!("https://www.youtube.com/watch?v={id}"),
+                url: page_url.clone(),
                 is_live,
                 viewers: e.get("view_count").and_then(|n| n.as_u64()),
                 thumbnail: Some(thumbnail_url(id)),
+                media: MediaKind::YouTube(page_url),
+                playlist: None,
             });
         }
     }

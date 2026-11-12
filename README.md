@@ -60,6 +60,15 @@ downloaded thumbnails are cached under `lowave/art/`.
 Note: release builds on Windows hide the console window; `cargo run`
 (debug) keeps it for log output.
 
+## Playlists tab
+
+The sidebar's Playlists tab imports `.m3u`/`.m3u8` files — via the
+"＋ import .m3u" button (native file dialog) or by dragging files onto the
+window. Entries can be local audio files (absolute or relative to the
+playlist), remote audio URLs, or `#EXTINF` titles. Local/remote entries play
+directly through ffmpeg with no YouTube involved. Imports persist in config
+and are re-parsed on launch, so editing the file updates the list.
+
 ## Tests
 
 `cargo test` runs the hermetic suite (ffmpeg synthetic-tone pipe test — no

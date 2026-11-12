@@ -62,19 +62,19 @@ impl PlaybackController {
         }
     }
 
-    pub fn play(&self, url: String) {
+    pub fn play(&self, label: String, media: ytdlp::MediaKind) {
         let Some(sink) = self.sink.clone() else {
             self.set_status(PlaybackStatus::Error("no audio device".into()));
             return;
         };
         self.gen.fetch_add(1, Ordering::SeqCst);
         sink.stop();
-        self.set_status(PlaybackStatus::Buffering(url.clone()));
+        self.set_status(PlaybackStatus::Buffering(label.clone()));
         let my_gen = self.gen.load(Ordering::SeqCst);
         let gen = self.gen.clone();
         let status = self.status.clone();
         std::thread::spawn(move || {
-            stream_into_sink(&url, &sink, &status, &gen, my_gen);
+            stream_into_sink(&label, &media, &sink, &status, &gen, my_gen);
         });
     }
 
@@ -105,7 +105,8 @@ impl PlaybackController {
 }
 
 fn stream_into_sink(
-    url: &str,
+    label: &str,
+    media: &ytdlp::MediaKind,
     sink: &Arc<rodio::Sink>,
     status: &Arc<Mutex<PlaybackStatus>>,
     gen: &Arc<AtomicU64>,
@@ -120,22 +121,29 @@ fn stream_into_sink(
 
     let mut failures = 0u32;
     // Reconnect loop: survives per-segment stalls and googlevideo URL expiry.
+    // Direct media has no expiry; the loop just replays it after a stall.
     while alive() {
-        let media_url = match ytdlp::resolve_media_url(url) {
-            Ok(u) => {
+        let media_url = match media {
+            ytdlp::MediaKind::Direct(d) => {
                 failures = 0;
-                u
+                d.clone()
             }
-            Err(e) => {
-                failures += 1;
-                if failures > MAX_RESOLVE_RETRIES {
-                    set(PlaybackStatus::Error(format!("resolve: {e:#}")));
-                    return;
+            ytdlp::MediaKind::YouTube(url) => match ytdlp::resolve_media_url(url) {
+                Ok(u) => {
+                    failures = 0;
+                    u
                 }
-                set(PlaybackStatus::Buffering(format!("retry resolve ({failures})")));
-                std::thread::sleep(std::time::Duration::from_secs(2 * failures as u64));
-                continue;
-            }
+                Err(e) => {
+                    failures += 1;
+                    if failures > MAX_RESOLVE_RETRIES {
+                        set(PlaybackStatus::Error(format!("resolve: {e:#}")));
+                        return;
+                    }
+                    set(PlaybackStatus::Buffering(format!("retry resolve ({failures})")));
+                    std::thread::sleep(std::time::Duration::from_secs(2 * failures as u64));
+                    continue;
+                }
+            },
         };
         let mut child = match ytdlp::spawn_pcm_pipe(&media_url) {
             Ok(c) => c,
@@ -152,7 +160,7 @@ fn stream_into_sink(
             }
         };
 
-        set(PlaybackStatus::Buffering(url.to_string()));
+        set(PlaybackStatus::Buffering(label.to_string()));
         let mut pcm = vec![0u8; CHUNK_SAMPLES * 4];
         let mut playing_reported = false;
         let mut eof = false;
@@ -184,7 +192,7 @@ fn stream_into_sink(
             sink.play();
             if !playing_reported {
                 playing_reported = true;
-                set(PlaybackStatus::Playing(url.to_string()));
+                set(PlaybackStatus::Playing(label.to_string()));
             }
         }
         let _ = child.kill();
@@ -193,7 +201,7 @@ fn stream_into_sink(
             return;
         }
         // EOF = expired URL or dropped live; loop around and re-resolve.
-        set(PlaybackStatus::Buffering(format!("reconnecting {url}")));
+        set(PlaybackStatus::Buffering(format!("reconnecting {label}")));
         std::thread::sleep(std::time::Duration::from_secs(2));
     }
 }
