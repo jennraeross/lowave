@@ -9,6 +9,7 @@ pub struct PlaylistFile {
     pub path: PathBuf,
     pub entries: Vec<LiveEntry>,
     pub missing: usize,
+    pub unsupported: usize,
 }
 
 /// Parse an .m3u/.m3u8 file into entries. Understands `#EXTINF` titles;
@@ -17,6 +18,7 @@ pub struct PlaylistFile {
 pub fn load_m3u(name: &str, path: &Path) -> PlaylistFile {
     let mut entries = Vec::new();
     let mut missing = 0usize;
+    let mut unsupported = 0usize;
     let text = std::fs::read_to_string(path).unwrap_or_default();
     let mut pending_title: Option<String> = None;
     let mut idx = 0usize;
@@ -62,6 +64,10 @@ pub fn load_m3u(name: &str, path: &Path) -> PlaylistFile {
                 .join(&candidate)
         };
         if resolved.is_file() {
+            if !crate::ytdlp::has_audio_stream(&resolved.to_string_lossy()) {
+                unsupported += 1;
+                continue;
+            }
             let s = resolved.to_string_lossy().to_string();
             entries.push(LiveEntry {
                 id: format!("pl:{name}:{idx}"),
@@ -83,6 +89,7 @@ pub fn load_m3u(name: &str, path: &Path) -> PlaylistFile {
         path: path.to_path_buf(),
         entries,
         missing,
+        unsupported,
     }
 }
 
@@ -129,7 +136,7 @@ fn display_name(line: &str) -> String {    // Last path segment, minus query str
 mod tests {
     use super::*;
 
-    fn write_tmp(name: &str, content: &str) -> PathBuf {
+    fn write_tmp(name: &str, content: &[u8]) -> PathBuf {
         let dir = std::env::temp_dir().join("lowave-test-m3u");
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join(name);
@@ -137,21 +144,46 @@ mod tests {
         p
     }
 
+    /// Minimal valid WAV: 0.5s of 440Hz 16-bit mono @44.1k. ffprobe reads it.
+    fn tiny_wav() -> Vec<u8> {
+        let n = 22050u32;
+        let mut v = Vec::with_capacity(44 + n as usize * 2);
+        v.extend_from_slice(b"RIFF");
+        v.extend_from_slice(&(36 + n * 2).to_le_bytes());
+        v.extend_from_slice(b"WAVEfmt ");
+        v.extend_from_slice(&16u32.to_le_bytes());
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(&44100u32.to_le_bytes());
+        v.extend_from_slice(&88200u32.to_le_bytes());
+        v.extend_from_slice(&2u16.to_le_bytes());
+        v.extend_from_slice(&16u16.to_le_bytes());
+        v.extend_from_slice(b"data");
+        v.extend_from_slice(&(n * 2).to_le_bytes());
+        for i in 0..n {
+            let s = ((i as f32 * 440.0 * std::f32::consts::TAU / 44100.0).sin() * 10000.0) as i16;
+            v.extend_from_slice(&s.to_le_bytes());
+        }
+        v
+    }
+
     #[test]
     fn parses_extinf_titles_urls_and_relative_paths() {
         let dir = std::env::temp_dir().join("lowave-test-m3u");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("track one.mp3"), b"fake").unwrap();
+        std::fs::write(dir.join("track one.wav"), tiny_wav()).unwrap();
+        std::fs::write(dir.join("notes.txt"), b"not audio").unwrap();
         let pl = write_tmp(
             "mix.m3u",
-            "#EXTM3U\n#EXTINF:123,Artist - Title\ntrack one.mp3\n# a comment\nhttps://example.com/stream?a=1\n./missing.flac\n",
+            b"#EXTM3U\n#EXTINF:123,Artist - Title\ntrack one.wav\n# a comment\nhttps://example.com/stream?a=1\n./missing.flac\nnotes.txt\n",
         );
         let parsed = load_m3u("mix", &pl);
         assert_eq!(parsed.entries.len(), 2, "want file + URL entries");
         assert_eq!(parsed.missing, 1);
+        assert_eq!(parsed.unsupported, 1, "txt file has no audio stream");
         assert_eq!(parsed.entries[0].title, "Artist - Title");
         assert!(matches!(parsed.entries[0].media, MediaKind::Direct(_)));
-        assert!(parsed.entries[0].url.ends_with("track one.mp3"));
+        assert!(parsed.entries[0].url.ends_with("track one.wav"));
         assert!(matches!(parsed.entries[1].media, MediaKind::Direct(_)));
         assert_eq!(
             parsed.entries[1].media,
@@ -165,17 +197,17 @@ mod tests {
     fn write_then_parse_round_trips() {
         let dir = std::env::temp_dir().join("lowave-test-m3u");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("track one.mp3"), b"fake").unwrap();
+        std::fs::write(dir.join("track one.wav"), tiny_wav()).unwrap();
         let entries = vec![
             DraftEntry::new(
                 "Artist - Title, with comma".into(),
-                dir.join("track one.mp3").to_string_lossy().to_string(),
+                dir.join("track one.wav").to_string_lossy().to_string(),
             ),
             DraftEntry::new("Remote".into(), "https://example.com/live".into()),
             // Newline in a title is stripped so the file stays line-based.
             DraftEntry::new(
                 "Multi\nline title".into(),
-                dir.join("track one.mp3").to_string_lossy().to_string(),
+                dir.join("track one.wav").to_string_lossy().to_string(),
             ),
         ];
         let path = dir.join("roundtrip.m3u");

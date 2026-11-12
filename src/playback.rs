@@ -120,6 +120,7 @@ fn stream_into_sink(
     };
 
     let mut failures = 0u32;
+    let mut fast_fails = 0u32;
     // Reconnect loop: survives per-segment stalls and googlevideo URL expiry.
     // Direct media has no expiry; the loop just replays it after a stall.
     while alive() {
@@ -161,8 +162,10 @@ fn stream_into_sink(
         };
 
         set(PlaybackStatus::Buffering(label.to_string()));
+        let session_start = std::time::Instant::now();
         let mut pcm = vec![0u8; CHUNK_SAMPLES * 4];
         let mut playing_reported = false;
+        let mut chunks_appended = 0u32;
         let mut eof = false;
         while alive() && !eof {
             // Fill one chunk (short on EOF/stall).
@@ -190,6 +193,7 @@ fn stream_into_sink(
             }
             sink.append(rodio::buffer::SamplesBuffer::new(CHANNELS, SAMPLE_RATE, floats));
             sink.play();
+            chunks_appended += 1;
             if !playing_reported {
                 playing_reported = true;
                 set(PlaybackStatus::Playing(label.to_string()));
@@ -199,6 +203,20 @@ fn stream_into_sink(
         let _ = child.wait();
         if !alive() {
             return;
+        }
+        // ffmpeg exiting immediately with zero audio means the source is
+        // unusable (missing/unsupported file, dead URL) — error out instead
+        // of spinning in the reconnect loop forever.
+        if chunks_appended == 0 && session_start.elapsed() < std::time::Duration::from_secs(3) {
+            fast_fails += 1;
+            if fast_fails >= 3 {
+                set(PlaybackStatus::Error(format!(
+                    "playback failed to start — unsupported or missing file? ({label})"
+                )));
+                return;
+            }
+        } else {
+            fast_fails = 0;
         }
         // EOF = expired URL or dropped live; loop around and re-resolve.
         set(PlaybackStatus::Buffering(format!("reconnecting {label}")));
@@ -282,6 +300,59 @@ mod tests {
         let mut stdout = child.stdout.take().expect("stdout");
         // ~3s of stereo f32 @44.1k.
         let want = SAMPLE_RATE as usize * 2 * 3 * 4;
+        let mut buf = vec![0u8; want];
+        let mut filled = 0;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while filled < want && std::time::Instant::now() < deadline {
+            match stdout.read(&mut buf[filled..]) {
+                Ok(0) => std::thread::sleep(std::time::Duration::from_millis(50)),
+                Ok(n) => filled += n,
+                Err(_) => break,
+            }
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(filled > want / 2, "only got {filled}/{want} bytes");
+        let floats = pcm_bytes_to_f32(&buf[..filled]);
+        let energy: f32 = floats.iter().map(|s| s * s).sum::<f32>() / floats.len() as f32;
+        assert!(energy > 1e-8, "decoded silence (energy {energy})");
+    }
+
+    /// Regression test for the local-file stall: ffmpeg used to receive
+    /// HTTP-only `-reconnect` flags for local paths and exit instantly,
+    /// which the reconnect loop turned into an endless "buffering" state.
+    /// Encodes a real opus file, then reads it back through `spawn_pcm_pipe`.
+    #[test]
+    fn decodes_local_opus_file_pipe() {
+        let bin = ytdlp::find_ffmpeg().expect("find ffmpeg");
+        let dir = std::env::temp_dir().join("lowave-test-local");
+        std::fs::create_dir_all(&dir).unwrap();
+        let opus = dir.join("tone.opus");
+        let st = std::process::Command::new(&bin)
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=2",
+                "-c:a",
+                "libopus",
+                "-y",
+            ])
+            .arg(&opus)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("encode opus fixture");
+        assert!(st.success(), "ffmpeg libopus encoder missing?");
+        let mut child =
+            ytdlp::spawn_pcm_pipe(&opus.to_string_lossy()).expect("spawn ffmpeg");
+        let mut stdout = child.stdout.take().expect("stdout");
+        // ~2s of stereo f32 @44.1k.
+        let want = SAMPLE_RATE as usize * 2 * 2 * 4;
         let mut buf = vec![0u8; want];
         let mut filled = 0;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);

@@ -212,21 +212,19 @@ pub fn find_ffmpeg() -> Result<PathBuf> {
     Ok(PathBuf::from(name))
 }
 
-/// Spawn `ffmpeg -i <media_url> -f f32le -ac 2 -ar 44100 -` with piped stdout.
+/// Spawn `ffmpeg -i <media> -f f32le -ac 2 -ar 44100 -` with piped stdout.
 /// Emits raw interleaved f32 PCM the player appends straight to rodio.
+/// The `-reconnect` flags only work on network inputs: passing them for a
+/// local file makes ffmpeg exit immediately ("Option reconnect not found").
 pub fn spawn_pcm_pipe(media_url: &str) -> Result<std::process::Child> {
     let bin = find_ffmpeg()?;
-    let child = Command::new(&bin)
+    let mut cmd = Command::new(&bin);
+    cmd.args(["-hide_banner", "-loglevel", "error"]);
+    if media_url.starts_with("http://") || media_url.starts_with("https://") {
+        cmd.args(["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"]);
+    }
+    let child = cmd
         .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-reconnect",
-            "1",
-            "-reconnect_streamed",
-            "1",
-            "-reconnect_delay_max",
-            "5",
             "-i",
             media_url,
             "-vn",
@@ -242,8 +240,62 @@ pub fn spawn_pcm_pipe(media_url: &str) -> Result<std::process::Child> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .with_context(|| format!("spawn {} for HLS audio", bin.display()))?;
+        .with_context(|| format!("spawn {} for audio", bin.display()))?;
     Ok(child)
+}
+
+/// Locate an ffprobe binary next to ffmpeg, else on PATH.
+pub fn find_ffprobe() -> Option<PathBuf> {
+    if let Ok(ffmpeg) = find_ffmpeg() {
+        if let Some(dir) = ffmpeg.parent() {
+            for name in ["ffprobe", "ffprobe.exe"] {
+                let p = dir.join(name);
+                if p.is_file() {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    let name = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
+    for dir in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
+        let p = dir.join(name);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// True if `path` (local file) contains a decodable audio stream.
+/// Remote URLs are not probed (would need network); the player's fast-fail
+/// guard surfaces those failures at play time instead.
+pub fn has_audio_stream(path: &str) -> bool {
+    let probe = match find_ffprobe() {
+        Some(p) => p,
+        None => return true, // Can't verify; let ffmpeg try at play time.
+    };
+    match std::process::Command::new(&probe)
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "a",
+            "-show_entries",
+            "stream=codec_type",
+            "-of",
+            "csv=p=0",
+            path,
+        ])
+        .output()
+    {
+        Ok(out) => {
+            out.status.success()
+                && String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .any(|l| l.trim() == "audio")
+        }
+        Err(_) => true,
+    }
 }
 
 #[cfg(test)]

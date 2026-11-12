@@ -386,6 +386,9 @@ impl LowaveApp {
             if pl.missing > 0 {
                 ui.weak(format!("{} file(s) missing", pl.missing));
             }
+            if pl.unsupported > 0 {
+                ui.weak(format!("{} file(s) have no audio stream", pl.unsupported));
+            }
             ui.with_layout(
                 egui::Layout::top_down_justified(egui::Align::LEFT),
                 |ui| {
