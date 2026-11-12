@@ -133,6 +133,16 @@ impl LowaveApp {
             }
         }
     }
+
+    fn step_stream(&mut self, dir: i32) {
+        if self.entries.is_empty() {
+            return;
+        }
+        let len = self.entries.len() as i32;
+        let cur = self.selected.unwrap_or(0) as i32;
+        let next = (cur + dir).rem_euclid(len) as usize;
+        self.play_entry(next);
+    }
 }
 
 impl eframe::App for LowaveApp {
@@ -211,6 +221,15 @@ impl eframe::App for LowaveApp {
                 };
                 if action.toggle_play {
                     self.toggle_play();
+                }
+                if action.stop {
+                    self.player.stop();
+                }
+                if action.next {
+                    self.step_stream(1);
+                }
+                if action.prev {
+                    self.step_stream(-1);
                 }
                 if let Some(v) = action.volume {
                     self.cfg.volume = v;

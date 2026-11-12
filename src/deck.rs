@@ -14,6 +14,9 @@ pub struct DeckParams<'a> {
 #[derive(Default)]
 pub struct DeckAction {
     pub toggle_play: bool,
+    pub stop: bool,
+    pub next: bool,
+    pub prev: bool,
     pub volume: Option<f32>,
 }
 
