@@ -14,20 +14,27 @@ pub struct CassetteParams<'a> {
 /// with two reels whose packs wind/unwind over a loop, J-card art label,
 /// capstan + head, mechanical counter, and chunky piano-key transport on the
 /// top edge — PLAY (green), STOP (red), REW/FF (grey, previous/next stream).
-/// Reuses the wood plinth and shared bottom hardware (LED, play, fader).
+/// piano keys are the transport (no bottom play button here), with LED +
+/// volume fader docked at the bottom. Dark stage instead of wood.
 pub fn draw(ui: &mut egui::Ui, rect: egui::Rect, p: &CassetteParams) -> deck::DeckAction {
     let mut action = deck::DeckAction::default();
     let painter = ui.painter_at(rect);
 
-    crate::deck::draw_wood(&painter, rect);
+    // Dark stage, no wood in cassette mode.
+    painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(13, 13, 16));
+    painter.rect_stroke(
+        rect.shrink(3.0),
+        0.0,
+        egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(30, 28, 26)),
+        egui::StrokeKind::Inside,
+    );
 
-    // Hardware geometry first so the player clears it.
+    // Hardware geometry first so the player clears it (LED + fader only;
+    // transport lives on the piano keys).
     let base_y = rect.max.y - 40.0;
-    let play_center = egui::pos2(rect.min.x + 96.0, base_y);
-    let play_rect = egui::Rect::from_center_size(play_center, egui::vec2(96.0, 50.0));
     let fader_rect = egui::Rect::from_min_max(
         egui::pos2(
-            (rect.max.x - 206.0).max(play_rect.max.x + 12.0),
+            (rect.max.x - 206.0).max(rect.min.x + 48.0),
             base_y - 26.0,
         ),
         egui::pos2(rect.max.x - 16.0, base_y + 26.0),
@@ -36,7 +43,7 @@ pub fn draw(ui: &mut egui::Ui, rect: egui::Rect, p: &CassetteParams) -> deck::De
         egui::pos2(rect.min.x + 26.0, base_y),
         egui::vec2(12.0, 12.0),
     );
-    let keep_out = [play_rect, fader_rect, led_rect];
+    let keep_out = [fader_rect, led_rect];
 
     // Player body: landscape slab, centered, shrunk to clear hardware.
     let mut w = (rect.width() - 56.0).max(160.0);
@@ -105,14 +112,20 @@ pub fn draw(ui: &mut egui::Ui, rect: egui::Rect, p: &CassetteParams) -> deck::De
     let shell = win.shrink(6.0);
     painter.rect_filled(shell, 4.0, egui::Color32::from_rgb(38, 36, 34));
 
-    // J-card label stripe with the video art, upright.
-    let label_h = shell.height() * 0.30;
-    let label = egui::Rect::from_min_max(
+    // J-card art, fitted at its native 16:9 so it never squeezes.
+    let zone = egui::Rect::from_min_max(
         egui::pos2(shell.min.x + 6.0, shell.min.y + 5.0),
-        egui::pos2(shell.max.x - 6.0, shell.min.y + 5.0 + label_h),
+        egui::pos2(shell.max.x - 6.0, shell.min.y + 5.0 + shell.height() * 0.42),
     );
+    let aspect = 16.0 / 9.0;
+    let (lw, lh) = if zone.width() / zone.height().max(1.0) > aspect {
+        (zone.height() * aspect, zone.height())
+    } else {
+        (zone.width(), zone.width() / aspect)
+    };
+    let label = egui::Rect::from_center_size(zone.center(), egui::vec2(lw, lh));
     if let Some(a) = p.art {
-        let sized = egui::load::SizedTexture::new(a.square.id(), label.size());
+        let sized = egui::load::SizedTexture::new(a.wide.id(), label.size());
         egui::Image::new(sized)
             .corner_radius(3.0)
             .paint_at(ui, label);
@@ -203,7 +216,8 @@ pub fn draw(ui: &mut egui::Ui, rect: egui::Rect, p: &CassetteParams) -> deck::De
         x += key_w + gap;
     }
 
-    // Shared hardware: LED, play, volume.
+    // Shared bottom hardware: LED + volume only. Transport lives on the
+    // piano keys above, so the vinyl-deck play button is gone here.
     let led = egui::pos2(rect.min.x + 26.0, base_y);
     painter.circle_filled(led, 5.0, egui::Color32::from_rgb(60, 55, 50));
     let led_col = if p.power {
@@ -213,9 +227,6 @@ pub fn draw(ui: &mut egui::Ui, rect: egui::Rect, p: &CassetteParams) -> deck::De
     };
     painter.circle_filled(led, 3.0, led_col);
 
-    if deck::chunky_button(ui, &painter, play_center, egui::vec2(96.0, 50.0), p.power) {
-        action.toggle_play = true;
-    }
     if let Some(v) = deck::chunky_fader(ui, &painter, fader_rect, p.volume) {
         action.volume = Some(v);
     }

@@ -2,16 +2,17 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-/// Square cover plus circular-masked disc textures for one video.
+/// Square cover, circular-masked disc label, and wide J-card art for one video.
 #[derive(Clone)]
 pub struct Art {
     pub square: egui::TextureHandle,
     pub disc: egui::TextureHandle,
+    pub wide: egui::TextureHandle,
 }
 
 /// Downloads YouTube thumbnails in the background and hands out egui
 /// textures. Files are cached under the config dir as `art/<videoid>.png`
-/// (square, unmasked) so refreshes are instant and offline-friendly.
+/// (16:9, unmasked) so refreshes are instant and offline-friendly.
 pub struct ArtCache {
     dir: PathBuf,
     mem: HashMap<String, Art>,
@@ -65,8 +66,8 @@ impl ArtCache {
         None
     }
 
-    /// Center-crop to square and resize; saved to disk unmasked so the same
-    /// file serves both the upright cover and the masked spinning disc.
+    /// Fit to 16:9 and save unmasked, so the same file serves the upright
+    /// cover, the masked spinning disc, and the undistorted J-card label.
     fn download(url: &str, path: &PathBuf) {
         let bytes = match reqwest::blocking::get(url).and_then(|r| r.bytes()) {
             Ok(b) => b,
@@ -76,12 +77,13 @@ impl ArtCache {
             Ok(i) => i.to_rgba8(),
             Err(_) => return,
         };
-        let (w, h) = (img.width(), img.height());
-        let side = w.min(h);
-        let square = image::imageops::crop_imm(&img, (w - side) / 2, (h - side) / 2, side, side)
-            .to_image();
-        let out =
-            image::imageops::resize(&square, 256, 256, image::imageops::FilterType::Lanczos3);
+        // Fit inside 512x288 preserving ratio, letterboxed on black so the
+        // cached file is always exactly 16:9.
+        let fitted = image::imageops::thumbnail(&img, 512, 288);
+        let mut out = image::RgbaImage::from_pixel(512, 288, image::Rgba([0, 0, 0, 255]));
+        let x = (512 - fitted.width()) / 2;
+        let y = (288 - fitted.height()) / 2;
+        image::imageops::overlay(&mut out, &fitted, x as i64, y as i64);
         let _ = out.save(path);
     }
 
@@ -106,15 +108,17 @@ impl ArtCache {
         )
     }
 
-    /// Builds both textures: square cover as-is, disc with a baked circular
-    /// alpha mask (rotation turns off rounding, so the mask must be baked).
+    /// Builds all three textures: square cover (center-cropped), disc with a
+    /// baked circular alpha mask (rotation turns off rounding, so the mask
+    /// must be baked), and the wide J-card art as-is.
     fn load_textures(ctx: &egui::Context, id: &str, path: &PathBuf) -> Option<Art> {
-        let square_img = image::open(path).ok()?.to_rgba8();
-        // Stale cache from before unmasked saves: re-download.
-        if square_img.width() < 4 || square_img.get_pixel(0, 0)[3] < 128 {
+        let wide_img = image::open(path).ok()?.to_rgba8();
+        // Stale cache (old square/masked saves): re-download.
+        if wide_img.width() != 512 || wide_img.height() != 288 {
             let _ = std::fs::remove_file(path);
             return None;
         }
+        let square_img = image::imageops::crop_imm(&wide_img, 112, 16, 256, 256).to_image();
         let mut disc_img = square_img.clone();
         let size = disc_img.width() as f32;
         let r = size / 2.0;
@@ -132,6 +136,7 @@ impl ArtCache {
         Some(Art {
             square: Self::upload(ctx, format!("art-{id}-sq"), &square_img),
             disc: Self::upload(ctx, format!("art-{id}-disc"), &disc_img),
+            wide: Self::upload(ctx, format!("art-{id}-wide"), &wide_img),
         })
     }
 }
