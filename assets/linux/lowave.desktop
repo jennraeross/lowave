@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=lowave
+Comment=Lofi livestream radio with a record-player UI
+Exec=lowave
+Icon=lowave
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+StartupWMClass=lowave

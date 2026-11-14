@@ -49,9 +49,15 @@ macOS (ARM64 + Intel) and publishes them as a GitHub Release:
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
-Each archive contains the `lowave` binary, a `yt-dlp` sidecar (auto-found
-next to the binary), `README.md`, and `LICENSE-MIT`. `ffmpeg` is still
-required separately (see table above).
+Each archive contains a `yt-dlp` sidecar (auto-found next to the binary),
+`README.md`, and `LICENSE-MIT`. `ffmpeg` is still required separately (see
+table above).
+
+| Archive | Contents / install |
+| ------- | ------------------ |
+| macOS `.zip` | `Lowave.app` bundle (icon included) — unzip and drag to Applications. yt-dlp rides inside `Contents/MacOS`. |
+| Windows `.zip` | `lowave.exe` with embedded icon + yt-dlp sidecar; unzip and run. |
+| Linux `.tar.gz` | `lowave` binary + hicolor icons + `lowave.desktop`. To install: copy the binary somewhere on `PATH`, icons to `~/.local/share/icons/hicolor/*/apps/`, and the `.desktop` file to `~/.local/share/applications/`, then run `update-desktop-database ~/.local/share/applications` and `gtk-update-icon-cache`. |
 
 Config + volume + last-played stream persist to the OS config dir as
 `lowave/streams.toml` (`%APPDATA%` on Windows, `~/.config` on Linux);

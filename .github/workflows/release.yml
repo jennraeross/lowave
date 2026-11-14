@@ -55,16 +55,34 @@ jobs:
         run: |
           rm -rf dist && mkdir dist
           if [ "${{ runner.os }}" = "Windows" ]; then
+            # Icon is embedded in the exe via winres (build.rs).
             cp target/release/lowave.exe dist/
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            # Proper .app bundle so the .icns icon applies.
+            APP=dist/Lowave.app
+            mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+            cp target/release/lowave "$APP/Contents/MacOS/"
+            cp assets/macos/Info.plist "$APP/Contents/"
+            cp assets/macos/icon.icns "$APP/Contents/Resources/"
           else
             cp target/release/lowave dist/
+            # Freedesktop icons + launcher (see README for install paths).
+            mkdir -p dist/icons dist/applications
+            cp -r assets/linux/icons/* dist/icons/
+            cp assets/linux/lowave.desktop dist/applications/
           fi
           cp README.md LICENSE-MIT dist/
-          # Bundle a yt-dlp sidecar (Unlicense) next to the binary; the app
-          # looks beside its exe first. ffmpeg is still required separately.
-          curl -sSL -o "dist/${{ matrix.sidecar }}" \
+          # Bundle a yt-dlp sidecar (Unlicense); the app looks beside its
+          # exe first (Contents/MacOS inside the .app). ffmpeg is still
+          # required separately.
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            SIDECAR_DIR=dist/Lowave.app/Contents/MacOS
+          else
+            SIDECAR_DIR=dist
+          fi
+          curl -sSL -o "$SIDECAR_DIR/${{ matrix.sidecar }}" \
             "https://github.com/yt-dlp/yt-dlp/releases/latest/download/${{ matrix.ytdlp }}"
-          chmod +x "dist/${{ matrix.sidecar }}" 2>/dev/null || true
+          chmod +x "$SIDECAR_DIR/${{ matrix.sidecar }}" 2>/dev/null || true
 
       - name: Pack archive
         shell: bash
@@ -72,6 +90,8 @@ jobs:
           cd dist
           if [ "${{ runner.os }}" = "Windows" ]; then
             7z a "../${{ matrix.asset }}.zip" *
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            ditto -c -k --sequesterRsrc --keepParent Lowave.app "../${{ matrix.asset }}.zip"
           else
             tar czf "../${{ matrix.asset }}.tar.gz" *
           fi
@@ -105,4 +125,4 @@ jobs:
           gh release create "${{ github.ref_name }}" artifacts/* \
             --title "${{ github.ref_name }}" \
             --generate-notes
-          echo "Released ${{ github.ref_name }}. Each archive holds the lowave binary plus a yt-dlp sidecar; ffmpeg must still be installed separately."
+          echo "Released ${{ github.ref_name }}. macOS ships a Lowave.app bundle, Windows an exe with embedded icon, Linux a binary plus hicolor icons and a .desktop file; every archive also holds a yt-dlp sidecar, ffmpeg must still be installed separately."

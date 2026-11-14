@@ -16,8 +16,17 @@ use ytdlp::LiveEntry;
 
 fn main() -> eframe::Result<()> {
     env_logger::init();
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png"))
+        .ok();
+    if icon.is_none() {
+        eprintln!("warning: bundled icon.png failed to decode");
+    }
+    let mut viewport = egui::ViewportBuilder::default().with_inner_size([640.0, 420.0]);
+    if let Some(icon) = icon {
+        viewport = viewport.with_icon(std::sync::Arc::new(icon));
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([640.0, 420.0]),
+        viewport,
         ..Default::default()
     };
     eframe::run_native(
